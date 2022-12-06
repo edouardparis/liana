@@ -235,10 +235,11 @@ impl ChooseCoins {
         // overhead
         tx_size += 11;
 
-        let input_size = cfg
-            .main_descriptor
-            .receive_descriptor()
-            .spender_input_size();
+        // let input_size = cfg
+        //     .main_descriptor
+        //     .receive_descriptor()
+        //     .spender_input_size();
+        let input_size = 50;
 
         let mut selected_amount = 0_u64;
         for (coin, selected) in &self.coins {

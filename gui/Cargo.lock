@@ -1541,7 +1541,7 @@ dependencies = [
 [[package]]
 name = "liana"
 version = "0.0.1"
-source = "git+https://github.com/revault/liana?branch=master#38e342c8cd4c7d5d9d497013aa466fe62c0e3a4b"
+source = "git+https://github.com/darosior/minisafe?branch=unrecognized_input#427a7e17bc07c84d653f6ce709ef8407866e5d67"
 dependencies = [
  "backtrace",
  "base64",
