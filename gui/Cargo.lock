@@ -188,9 +188,8 @@ dependencies = [
 
 [[package]]
 name = "async-hwi"
-version = "0.0.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "912663643d018301fb5534949e8430515c7cdc9bf453bfefba2dc70dc854dd31"
+version = "0.0.17"
+source = "git+https://github.com/wizardsardine/async-hwi?branch=master#d2fdc220e09cf250c6104e9e4044cb3dd7d83345"
 dependencies = [
  "async-trait",
  "bitbox-api",
@@ -201,7 +200,13 @@ dependencies = [
  "ledger-apdu",
  "ledger-transport-hidapi",
  "ledger_bitcoin_client",
+ "prost 0.12.2",
+ "prost-derive 0.12.2",
  "regex",
+ "reqwest",
+ "serde",
+ "serde_bytes",
+ "serde_cbor",
  "serialport",
  "tokio",
  "tokio-serial",
@@ -350,7 +355,7 @@ dependencies = [
  "noise-protocol",
  "noise-rust-crypto",
  "num-bigint",
- "prost 0.12.3",
+ "prost 0.12.2",
  "prost-build",
  "semver",
  "serde",
@@ -1263,7 +1268,7 @@ checksum = "887d93f60543e9a9362ef8a21beedd0a833c5d9610e18c67abe15a5963dcb1a4"
 dependencies = [
  "bit_field",
  "flume",
- "half",
+ "half 2.4.0",
  "lebe",
  "miniz_oxide",
  "rayon-core",
@@ -1751,6 +1756,12 @@ dependencies = [
 
 [[package]]
 name = "half"
+version = "1.8.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b43ede17f21864e81be2fa654110bf1e793774238d86ef8555c37e6519c0403"
+
+[[package]]
+name = "half"
 version = "2.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b5eceaaeec696539ddaf7b333340f1af35a5aa87ae3e4f3ead0532f72affab2e"
@@ -2019,7 +2030,7 @@ dependencies = [
  "bitflags 2.5.0",
  "bytemuck",
  "cosmic-text",
- "half",
+ "half 2.4.0",
  "iced_core",
  "iced_futures",
  "image",
@@ -3439,12 +3450,12 @@ dependencies = [
 
 [[package]]
 name = "prost"
-version = "0.12.3"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "146c289cda302b98a28d40c8b3b90498d6e526dd24ac2ecea73e4e491685b94a"
+checksum = "5a5a410fc7882af66deb8d01d01737353cf3ad6204c408177ba494291a626312"
 dependencies = [
  "bytes",
- "prost-derive 0.12.3",
+ "prost-derive 0.12.2",
 ]
 
 [[package]]
@@ -3484,9 +3495,9 @@ dependencies = [
 
 [[package]]
 name = "prost-derive"
-version = "0.12.3"
+version = "0.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "efb6c9a1dd1def8e2124d17e83a20af56f1570d6c2d2bd9e266ccb768df3840e"
+checksum = "065717a5dfaca4a83d2fe57db3487b311365200000551d7a364e715dbf4346bc"
 dependencies = [
  "anyhow",
  "itertools 0.11.0",
@@ -4001,7 +4012,7 @@ version = "0.28.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d24b59d129cdadea20aea4fb2352fa053712e5d713eee47d700cd4b2bc002f10"
 dependencies = [
- "bitcoin_hashes 0.13.0",
+ "bitcoin_hashes 0.12.0",
  "secp256k1-sys",
  "serde",
 ]
@@ -4034,6 +4045,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3fb1c873e1b9b056a4dc4c0c198b24c3ffa059243875552b2bd0933b1aee4ce2"
 dependencies = [
  "serde_derive",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b8497c313fd43ab992087548117643f6fcd935cbf36f176ffda0aacf9591734"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "serde_cbor"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2bef2ebfde456fb76bbcf9f59315333decc4fda0b2b44b420243c11e0f5ec1f5"
+dependencies = [
+ "half 1.8.3",
+ "serde",
 ]
 
 [[package]]
