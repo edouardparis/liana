@@ -1,4 +1,4 @@
-use chrono::NaiveDateTime;
+use chrono::DateTime;
 use std::collections::{HashMap, HashSet};
 
 use iced::{alignment, widget::tooltip, Alignment, Length};
@@ -107,7 +107,7 @@ fn tx_list_view(i: usize, tx: &HistoryTransaction) -> Element<'_, Message> {
                                     Container::new(
                                         text(format!(
                                             "{}",
-                                            NaiveDateTime::from_timestamp_opt(t as i64, 0)
+                                            DateTime::from_timestamp(t as i64, 0)
                                                 .unwrap()
                                                 .format("%b. %d, %Y - %T"),
                                         ))
@@ -374,7 +374,7 @@ pub fn tx_view<'a>(
             .push(card::simple(
                 Column::new()
                     .push_maybe(tx.time.map(|t| {
-                        let date = NaiveDateTime::from_timestamp_opt(t as i64, 0)
+                        let date = DateTime::from_timestamp(t as i64, 0)
                             .unwrap()
                             .format("%b. %d, %Y - %T");
                         Row::new()

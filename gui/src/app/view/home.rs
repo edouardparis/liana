@@ -1,4 +1,4 @@
-use chrono::NaiveDateTime;
+use chrono::DateTime;
 use std::collections::HashMap;
 
 use iced::{alignment, widget::Space, Alignment, Length};
@@ -172,7 +172,7 @@ fn event_list_view(i: usize, event: &HistoryTransaction) -> Column<'_, Message> 
                 } else if let Some(t) = event.time {
                     col.push(event::confirmed_incoming_event(
                         label,
-                        NaiveDateTime::from_timestamp_opt(t as i64, 0).unwrap(),
+                        DateTime::from_timestamp(t as i64, 0).unwrap(),
                         &output.value,
                         Message::SelectSub(i, output_index),
                     ))
@@ -188,7 +188,7 @@ fn event_list_view(i: usize, event: &HistoryTransaction) -> Column<'_, Message> 
             } else if let Some(t) = event.time {
                 col.push(event::confirmed_outgoing_event(
                     label,
-                    NaiveDateTime::from_timestamp_opt(t as i64, 0).unwrap(),
+                    DateTime::from_timestamp(t as i64, 0).unwrap(),
                     &output.value,
                     Message::SelectSub(i, output_index),
                 ))
@@ -286,7 +286,7 @@ pub fn payment_view<'a>(
             .push(card::simple(
                 Column::new()
                     .push_maybe(tx.time.map(|t| {
-                        let date = NaiveDateTime::from_timestamp_opt(t as i64, 0)
+                        let date = DateTime::from_timestamp(t as i64, 0)
                             .unwrap()
                             .format("%b. %d, %Y - %T");
                         Row::new()

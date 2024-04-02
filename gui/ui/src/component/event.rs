@@ -39,7 +39,7 @@ pub fn unconfirmed_outgoing_event<'a, T: Clone + 'a>(
 
 pub fn confirmed_outgoing_event<'a, T: Clone + 'a>(
     label: Option<Text<'a>>,
-    date: chrono::NaiveDateTime,
+    date: chrono::DateTime<chrono::Utc>,
     amount: &Amount,
     msg: T,
 ) -> Container<'a, T> {
@@ -99,7 +99,7 @@ pub fn unconfirmed_incoming_event<'a, T: Clone + 'a>(
 
 pub fn confirmed_incoming_event<'a, T: Clone + 'a>(
     label: Option<Text<'a>>,
-    date: chrono::NaiveDateTime,
+    date: chrono::DateTime<chrono::Utc>,
     amount: &Amount,
     msg: T,
 ) -> Container<'a, T> {
