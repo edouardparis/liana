@@ -42,15 +42,9 @@ impl From<AuthError> for DaemonError {
     }
 }
 
-fn request<U: IntoUrl>(
-    http: &reqwest::Client,
-    method: Method,
-    url: U,
-    access_token: &str,
-) -> RequestBuilder {
+fn request<U: IntoUrl>(http: &reqwest::Client, method: Method, url: U) -> RequestBuilder {
     let req = http
         .request(method, url)
-        .header("Authorization", format!("Bearer {}", access_token))
         .header("Content-Type", "application/json")
         .header("Liana-Version", "0.1");
     tracing::debug!("Sending http request: {:?}", req);
@@ -77,14 +71,13 @@ impl BackendClient {
         network: Network,
     ) -> Result<Self, DaemonError> {
         let http = reqwest::Client::new();
-        let response = request(
-            &http,
-            Method::GET,
-            format!("{}/v1/me", url),
-            &credentials.access_token,
-        )
-        .send()
-        .await?;
+        let response = request(&http, Method::GET, format!("{}/v1/me", url))
+            .header(
+                "Authorization",
+                format!("Bearer {}", credentials.access_token),
+            )
+            .send()
+            .await?;
         if !response.status().is_success() {
             return Err(DaemonError::NoAnswer);
         }
@@ -123,16 +116,20 @@ impl BackendClient {
         )
     }
 
-    async fn request<U: IntoUrl>(&self, method: Method, url: U) -> RequestBuilder {
+    async fn send(&self, req: RequestBuilder) -> Result<Response, reqwest::Error> {
         let access_token = &self.auth.read().await.access_token;
-        request(&self.http, method, url, access_token)
+        req.header("Authorization", format!("Bearer {}", access_token))
+            .send()
+            .await
     }
 
     pub async fn list_wallets(&self) -> Result<Vec<api::Wallet>, DaemonError> {
         let response = self
-            .request(Method::GET, &format!("{}/v1/wallets", self.url))
-            .await
-            .send()
+            .send(request(
+                &self.http,
+                Method::GET,
+                &format!("{}/v1/wallets", self.url),
+            ))
             .await?;
         if !response.status().is_success() {
             return Err(DaemonError::Http(
@@ -152,14 +149,18 @@ impl BackendClient {
         provider_keys: &Vec<api::payload::ProviderKey>,
     ) -> Result<api::Wallet, DaemonError> {
         let response = self
-            .request(Method::POST, &format!("{}/v1/wallets", self.url))
-            .await
-            .json(&api::payload::CreateWallet {
-                name,
-                descriptor,
-                provider_keys,
-            })
-            .send()
+            .send(
+                request(
+                    &self.http,
+                    Method::POST,
+                    &format!("{}/v1/wallets", self.url),
+                )
+                .json(&api::payload::CreateWallet {
+                    name,
+                    descriptor,
+                    provider_keys,
+                }),
+            )
             .await?;
         if !response.status().is_success() {
             return Err(DaemonError::Http(
@@ -197,19 +198,20 @@ impl BackendClient {
                 })
             {
                 let response: Response = self
-                    .request(
-                        Method::PATCH,
-                        &format!("{}/v1/wallets/{}", self.url, wallet_uuid),
-                    )
-                    .await
-                    .json(&api::payload::UpdateWallet {
-                        ledger_hmac: Some(api::payload::UpdateLedgerHmac {
-                            fingerprint: cfg.fingerprint.to_string(),
-                            hmac: cfg.token.clone(),
+                    .send(
+                        request(
+                            &self.http,
+                            Method::PATCH,
+                            &format!("{}/v1/wallets/{}", self.url, wallet_uuid),
+                        )
+                        .json(&api::payload::UpdateWallet {
+                            ledger_hmac: Some(api::payload::UpdateLedgerHmac {
+                                fingerprint: cfg.fingerprint.to_string(),
+                                hmac: cfg.token.clone(),
+                            }),
+                            fingerprint_aliases: None,
                         }),
-                        fingerprint_aliases: None,
-                    })
-                    .send()
+                    )
                     .await?;
 
                 if !response.status().is_success() {
@@ -232,24 +234,25 @@ impl BackendClient {
                 })
         }) {
             let response: Response = self
-                .request(
-                    Method::PATCH,
-                    &format!("{}/v1/wallets/{}", self.url, wallet_uuid),
+                .send(
+                    request(
+                        &self.http,
+                        Method::PATCH,
+                        &format!("{}/v1/wallets/{}", self.url, wallet_uuid),
+                    )
+                    .json(&api::payload::UpdateWallet {
+                        ledger_hmac: None,
+                        fingerprint_aliases: Some(
+                            fingerprint_aliases
+                                .iter()
+                                .map(|(fg, alias)| api::payload::UpdateFingerprintAlias {
+                                    fingerprint: fg.to_string(),
+                                    alias: alias.to_string(),
+                                })
+                                .collect(),
+                        ),
+                    }),
                 )
-                .await
-                .json(&api::payload::UpdateWallet {
-                    ledger_hmac: None,
-                    fingerprint_aliases: Some(
-                        fingerprint_aliases
-                            .iter()
-                            .map(|(fg, alias)| api::payload::UpdateFingerprintAlias {
-                                fingerprint: fg.to_string(),
-                                alias: alias.to_string(),
-                            })
-                            .collect(),
-                    ),
-                })
-                .send()
                 .await?;
 
             if !response.status().is_success() {
@@ -268,12 +271,11 @@ impl BackendClient {
         invitation_id: &str,
     ) -> Result<api::WalletInvitation, DaemonError> {
         let response = self
-            .request(
+            .send(request(
+                &self.http,
                 Method::GET,
                 &format!("{}/v1/invitations/{}", self.url, invitation_id),
-            )
-            .await
-            .send()
+            ))
             .await?;
         if !response.status().is_success() {
             return Err(DaemonError::Http(
@@ -287,12 +289,11 @@ impl BackendClient {
 
     pub async fn accept_wallet_invitation(&self, invitation_id: &str) -> Result<(), DaemonError> {
         let response = self
-            .request(
+            .send(request(
+                &self.http,
                 Method::POST,
                 &format!("{}/v1/invitations/{}/accept", self.url, invitation_id),
-            )
-            .await
-            .send()
+            ))
             .await?;
         if !response.status().is_success() {
             return Err(DaemonError::Http(
@@ -357,13 +358,14 @@ impl BackendWalletClient {
         }
         let response: Response = self
             .inner
-            .request(
-                Method::GET,
-                &format!("{}/v1/wallets/{}/psbts", self.inner.url, self.wallet_uuid),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::GET,
+                    &format!("{}/v1/wallets/{}/psbts", self.inner.url, self.wallet_uuid),
+                )
+                .query(&query),
             )
-            .await
-            .query(&query)
-            .send()
             .await?;
 
         if !response.status().is_success() {
@@ -397,16 +399,17 @@ impl BackendWalletClient {
         }
         let response: Response = self
             .inner
-            .request(
-                Method::GET,
-                &format!(
-                    "{}/v1/wallets/{}/transactions",
-                    self.inner.url, self.wallet_uuid
-                ),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::GET,
+                    &format!(
+                        "{}/v1/wallets/{}/transactions",
+                        self.inner.url, self.wallet_uuid
+                    ),
+                )
+                .query(&query),
             )
-            .await
-            .query(&query)
-            .send()
             .await?;
 
         if !response.status().is_success() {
@@ -433,16 +436,17 @@ impl BackendWalletClient {
         }
         let response: Response = self
             .inner
-            .request(
-                Method::GET,
-                &format!(
-                    "{}/v1/wallets/{}/transactions",
-                    self.inner.url, self.wallet_uuid
-                ),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::GET,
+                    &format!(
+                        "{}/v1/wallets/{}/transactions",
+                        self.inner.url, self.wallet_uuid
+                    ),
+                )
+                .query(&query),
             )
-            .await
-            .query(&query)
-            .send()
             .await?;
 
         if !response.status().is_success() {
@@ -483,13 +487,14 @@ impl BackendWalletClient {
         }
         let response: Response = self
             .inner
-            .request(
-                Method::GET,
-                &format!("{}/v1/wallets/{}/coins", self.inner.url, self.wallet_uuid),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::GET,
+                    &format!("{}/v1/wallets/{}/coins", self.inner.url, self.wallet_uuid),
+                )
+                .query(&query),
             )
-            .await
-            .query(&query)
-            .send()
             .await?;
 
         if !response.status().is_success() {
@@ -604,15 +609,14 @@ impl Daemon for BackendWalletClient {
     async fn get_new_address(&self) -> Result<GetAddressResult, DaemonError> {
         let response: Response = self
             .inner
-            .request(
+            .send(request(
+                &self.inner.http,
                 Method::POST,
                 &format!(
                     "{}/v1/wallets/{}/addresses",
                     self.inner.url, self.wallet_uuid
                 ),
-            )
-            .await
-            .send()
+            ))
             .await?;
 
         if !response.status().is_success() {
@@ -750,21 +754,22 @@ impl Daemon for BackendWalletClient {
         }
         let response: Response = self
             .inner
-            .request(
-                Method::POST,
-                &format!(
-                    "{}/v1/wallets/{}/psbts/generate",
-                    self.inner.url, self.wallet_uuid
-                ),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::POST,
+                    &format!(
+                        "{}/v1/wallets/{}/psbts/generate",
+                        self.inner.url, self.wallet_uuid
+                    ),
+                )
+                .json(&api::payload::GeneratePsbt {
+                    save: false,
+                    feerate: feerate_vb,
+                    inputs: coins_outpoints,
+                    recipients,
+                }),
             )
-            .await
-            .json(&api::payload::GeneratePsbt {
-                save: false,
-                feerate: feerate_vb,
-                inputs: coins_outpoints,
-                recipients,
-            })
-            .send()
             .await?;
 
         let res: api::DraftPsbtResult = response.json().await?;
@@ -790,21 +795,22 @@ impl Daemon for BackendWalletClient {
     ) -> Result<CreateSpendResult, DaemonError> {
         let response: Response = self
             .inner
-            .request(
-                Method::POST,
-                &format!(
-                    "{}/v1/wallets/{}/psbts/rbf",
-                    self.inner.url, self.wallet_uuid
-                ),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::POST,
+                    &format!(
+                        "{}/v1/wallets/{}/psbts/rbf",
+                        self.inner.url, self.wallet_uuid
+                    ),
+                )
+                .json(&api::payload::GenerateRbfPsbt {
+                    txid: *txid,
+                    is_cancel,
+                    feerate: feerate_vb,
+                    save: false,
+                }),
             )
-            .await
-            .json(&api::payload::GenerateRbfPsbt {
-                txid: *txid,
-                is_cancel,
-                feerate: feerate_vb,
-                save: false,
-            })
-            .send()
             .await?;
 
         let res: api::DraftPsbtResult = response.json().await?;
@@ -825,15 +831,16 @@ impl Daemon for BackendWalletClient {
     async fn update_spend_tx(&self, psbt: &Psbt) -> Result<(), DaemonError> {
         let response: Response = self
             .inner
-            .request(
-                Method::POST,
-                &format!("{}/v1/wallets/{}/psbts", self.inner.url, self.wallet_uuid),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::POST,
+                    &format!("{}/v1/wallets/{}/psbts", self.inner.url, self.wallet_uuid),
+                )
+                .json(&api::payload::ImportPsbt {
+                    psbt: psbt.to_string(),
+                }),
             )
-            .await
-            .json(&api::payload::ImportPsbt {
-                psbt: psbt.to_string(),
-            })
-            .send()
             .await?;
 
         if !response.status().is_success() {
@@ -860,12 +867,11 @@ impl Daemon for BackendWalletClient {
 
         let response: Response = self
             .inner
-            .request(
+            .send(request(
+                &self.inner.http,
                 Method::DELETE,
                 &format!("{}/v1/psbts/{}", self.inner.url, psbt.uuid),
-            )
-            .await
-            .send()
+            ))
             .await?;
 
         if !response.status().is_success() {
@@ -889,12 +895,11 @@ impl Daemon for BackendWalletClient {
 
         let response: Response = self
             .inner
-            .request(
+            .send(request(
+                &self.inner.http,
                 Method::POST,
                 &format!("{}/v1/psbts/{}/broadcast", self.inner.url, psbt.uuid),
-            )
-            .await
-            .send()
+            ))
             .await?;
 
         if !response.status().is_success() {
@@ -920,23 +925,24 @@ impl Daemon for BackendWalletClient {
     ) -> Result<Psbt, DaemonError> {
         let response: Response = self
             .inner
-            .request(
-                Method::POST,
-                &format!(
-                    "{}/v1/wallets/{}/psbts/recovery",
-                    self.inner.url, self.wallet_uuid
-                ),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::POST,
+                    &format!(
+                        "{}/v1/wallets/{}/psbts/recovery",
+                        self.inner.url, self.wallet_uuid
+                    ),
+                )
+                .json(&api::payload::GenerateRecoveryPsbt {
+                    save: false,
+                    feerate: feerate_vb,
+                    timelock: sequence
+                        .ok_or(DaemonError::Unexpected("Missing sequence".to_string()))?,
+                    address,
+                    inputs: coins_outpoints,
+                }),
             )
-            .await
-            .json(&api::payload::GenerateRecoveryPsbt {
-                save: false,
-                feerate: feerate_vb,
-                timelock: sequence
-                    .ok_or(DaemonError::Unexpected("Missing sequence".to_string()))?,
-                address,
-                inputs: coins_outpoints,
-            })
-            .send()
             .await?;
 
         let res: api::DraftPsbt = response.json().await?;
@@ -955,13 +961,14 @@ impl Daemon for BackendWalletClient {
         for chunk in items.chunks(api::DEFAULT_LABEL_ITEMS_LIMIT) {
             let response: Response = self
                 .inner
-                .request(
-                    Method::GET,
-                    &format!("{}/v1/wallets/{}/labels", self.inner.url, self.wallet_uuid),
+                .send(
+                    request(
+                        &self.inner.http,
+                        Method::GET,
+                        &format!("{}/v1/wallets/{}/labels", self.inner.url, self.wallet_uuid),
+                    )
+                    .query(&[("items", chunk.join(","))]),
                 )
-                .await
-                .query(&[("items", chunk.join(","))])
-                .send()
                 .await?;
 
             if !response.status().is_success() {
@@ -984,21 +991,22 @@ impl Daemon for BackendWalletClient {
     ) -> Result<(), DaemonError> {
         let response: Response = self
             .inner
-            .request(
-                Method::POST,
-                &format!("{}/v1/wallets/{}/labels", self.inner.url, self.wallet_uuid),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::POST,
+                    &format!("{}/v1/wallets/{}/labels", self.inner.url, self.wallet_uuid),
+                )
+                .json(&api::payload::Labels {
+                    labels: items
+                        .iter()
+                        .map(|(item, value)| api::payload::Label {
+                            item: item.to_string(),
+                            value: value.clone(),
+                        })
+                        .collect(),
+                }),
             )
-            .await
-            .json(&api::payload::Labels {
-                labels: items
-                    .iter()
-                    .map(|(item, value)| api::payload::Label {
-                        item: item.to_string(),
-                        value: value.clone(),
-                    })
-                    .collect(),
-            })
-            .send()
             .await?;
 
         if !response.status().is_success() {
@@ -1110,16 +1118,17 @@ impl Daemon for BackendWalletClient {
     async fn send_wallet_invitation(&self, email: &str) -> Result<(), DaemonError> {
         let response = self
             .inner
-            .request(
-                Method::POST,
-                &format!(
-                    "{}/v1/wallets/{}/invitations",
-                    self.inner.url, self.wallet_uuid
-                ),
+            .send(
+                request(
+                    &self.inner.http,
+                    Method::POST,
+                    &format!(
+                        "{}/v1/wallets/{}/invitations",
+                        self.inner.url, self.wallet_uuid
+                    ),
+                )
+                .json(&api::payload::CreateWalletInvitation { email }),
             )
-            .await
-            .json(&api::payload::CreateWalletInvitation { email })
-            .send()
             .await?;
         if !response.status().is_success() {
             return Err(DaemonError::Http(
@@ -1134,15 +1143,14 @@ impl Daemon for BackendWalletClient {
     async fn get_labels_bip329(&self, offset: u32, limit: u32) -> Result<Labels, DaemonError> {
         let response: Response = self
             .inner
-            .request(
+            .send(request(
+                &self.inner.http,
                 Method::GET,
                 &format!(
                     "{}/v1/wallets/{}/labels/bip329?offset={}&limit={}",
                     self.inner.url, self.wallet_uuid, offset, limit
                 ),
-            )
-            .await
-            .send()
+            ))
             .await?;
 
         let res: api::Labels = response.json().await?;
