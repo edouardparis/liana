@@ -283,8 +283,7 @@ dependencies = [
 [[package]]
 name = "async-hwi"
 version = "0.0.29"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "724d232316bc0d9ce24eb3b3a6c600f487bd877513bd0e73ec02f8c890af3275"
+source = "git+https://github.com/edouardparisvibes/async-hwi?branch=fix/jade-pinserver-handshake#1dbb764d11704577f26ad07a2a7e2d984fb99840"
 dependencies = [
  "async-trait",
  "bitbox-api",
