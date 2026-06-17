@@ -435,15 +435,21 @@ pub async fn connect_with_existing_account(
         client::BackendType::LianaConnect.user_agent(),
     );
 
-    let mut tokens = cache::Account::from_cache_by_email(&network_dir, &client.email)
+    let account = cache::Account::from_cache_by_email(&network_dir, &client.email)
         .map_err(|_| Error::Unexpected("Account must be in cache".to_string()))?
-        .ok_or(Error::Unexpected("Account must be in cache".to_string()))?
-        .tokens;
+        .ok_or(Error::Unexpected("Account must be in cache".to_string()))?;
+    let mut tokens = account.tokens.clone();
 
     if tokens.expires_at < chrono::Utc::now().timestamp() {
-        tokens = cache::update_connect_cache(&network_dir, &tokens, &client, true)
-            .await
-            .map_err(|e| Error::Unexpected(format!("Failed to update cache: {e}")))?;
+        tokens = cache::update_connect_cache(
+            &network_dir,
+            &tokens,
+            &client,
+            account.user_id.as_deref(),
+            true,
+        )
+        .await
+        .map_err(|e| Error::Unexpected(format!("Failed to update cache: {e}")))?;
     }
 
     let client = BackendClient::connect(client, config.backend_api_url, tokens, network).await?;

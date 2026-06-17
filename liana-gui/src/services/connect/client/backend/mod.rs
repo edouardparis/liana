@@ -572,6 +572,7 @@ impl Daemon for BackendWalletClient {
                         &network_dir,
                         &old,
                         &self.inner.auth_client,
+                        Some(self.inner.user_id()),
                         true, // refresh the token
                     )
                     .await

@@ -495,7 +495,7 @@ pub async fn connect(
     let client =
         BackendClient::connect(auth.clone(), backend_api_url, access.clone(), network).await?;
 
-    update_connect_cache(&network_dir, &access, &auth, false).await?;
+    update_connect_cache(&network_dir, &access, &auth, Some(client.user_id()), false).await?;
     // Stamp user_id onto the freshly-written cache row so that the next session
     // can locate it via the stable user_id key rather than the mutable email.
     if let Err(e) = cache::stamp_account_identity(
@@ -591,7 +591,14 @@ pub async fn connect_with_credentials(
     let mut tokens = cached.tokens;
 
     if tokens.expires_at < chrono::Utc::now().timestamp() {
-        tokens = cache::update_connect_cache(network_dir, &tokens, &auth, true).await?;
+        tokens = cache::update_connect_cache(
+            network_dir,
+            &tokens,
+            &auth,
+            auth_cfg.user_id.as_deref(),
+            true,
+        )
+        .await?;
     }
 
     let client = BackendClient::connect(auth, backend_api_url, tokens, network).await?;
