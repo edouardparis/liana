@@ -77,6 +77,7 @@ pub struct BackendClient {
     unauthenticated: Arc<AtomicBool>,
 
     user_id: String,
+    user_email: String,
 }
 
 impl BackendClient {
@@ -101,6 +102,7 @@ impl BackendClient {
         }
         let res: api::Claims = response.json().await?;
         let user_id = res.sub;
+        let user_email = res.email;
 
         Ok(Self {
             auth: Arc::new(RwLock::new(credentials)),
@@ -108,6 +110,7 @@ impl BackendClient {
             network,
             url,
             user_id,
+            user_email,
             http,
             unauthenticated: Arc::new(AtomicBool::new(false)),
         })
@@ -118,7 +121,7 @@ impl BackendClient {
     }
 
     pub fn user_email(&self) -> &str {
-        &self.auth_client.email
+        &self.user_email
     }
 
     pub fn user_id(&self) -> &str {

@@ -496,9 +496,6 @@ pub async fn connect(
         BackendClient::connect(auth.clone(), backend_api_url, access.clone(), network).await?;
 
     update_connect_cache(&network_dir, &access, &auth, false, Some(client.user_id())).await?;
-    // If the user just OTP'd in with a different email than a previously
-    // stamped row (server-side email change), `update_connect_cache` will have
-    // written a second row sharing the same user_id. Dedupe here.
     if let Err(e) = cache::stamp_account_identity(
         &network_dir,
         None,
@@ -511,9 +508,7 @@ pub async fn connect(
         tracing::warn!("Failed to stamp user_id on Liana-Connect cache: {}", e);
     }
 
-    // If the user OTP'd in for a known local wallet (post email-change or
-    // refresh-token revocation), update its settings.json entry too so the
-    // next launch's user_id-keyed lookup succeeds.
+    // If the user OTP'd in for a known local wallet, update settings.json too.
     if !connect_wallet_id.is_empty() {
         if let Err(e) = backfill_settings_for_wallet(
             &network_dir,
@@ -532,32 +527,24 @@ pub async fn connect(
         return Ok(BackendState::NoWallet(client));
     }
 
-    if connect_wallet_id.is_empty() {
-        let first = wallets.first().cloned().ok_or(DaemonError::NoAnswer)?;
-        let (wallet_client, wallet) = client.connect_wallet(first);
-        let coins = coins_to_cache(Arc::new(wallet_client.clone())).await?;
-        let settings = wallet_client.get_wallet_settings().await?;
-
-        Ok(BackendState::WalletExists(
-            wallet_client,
-            wallet,
-            coins,
-            settings,
-        ))
+    let wallet = if connect_wallet_id.is_empty() {
+        wallets.first().cloned().ok_or(DaemonError::NoAnswer)?
     } else if let Some(wallet) = wallets.into_iter().find(|w| w.id == connect_wallet_id) {
-        let (wallet_client, wallet) = client.connect_wallet(wallet);
-        let coins = coins_to_cache(Arc::new(wallet_client.clone())).await?;
-        let settings = wallet_client.get_wallet_settings().await?;
-
-        Ok(BackendState::WalletExists(
-            wallet_client,
-            wallet,
-            coins,
-            settings,
-        ))
+        wallet
     } else {
-        Ok(BackendState::NoWallet(client))
-    }
+        return Ok(BackendState::NoWallet(client));
+    };
+
+    let (wallet_client, wallet) = client.connect_wallet(wallet);
+    let coins = coins_to_cache(Arc::new(wallet_client.clone())).await?;
+    let settings = wallet_client.get_wallet_settings().await?;
+
+    Ok(BackendState::WalletExists(
+        wallet_client,
+        wallet,
+        coins,
+        settings,
+    ))
 }
 
 pub async fn connect_with_credentials(
@@ -604,14 +591,14 @@ pub async fn connect_with_credentials(
 
     let client = BackendClient::connect(auth, backend_api_url, tokens, network).await?;
 
-    backfill_local_link(network_dir, &client, &auth_cfg).await?;
-
     if let Some(wallet) = client
         .list_wallets()
         .await?
         .into_iter()
         .find(|w| w.id == auth_cfg.wallet_id)
     {
+        backfill_local_link(network_dir, &client, &auth_cfg).await?;
+
         let (wallet_client, wallet) = client.connect_wallet(wallet);
         let coins = coins_to_cache(Arc::new(wallet_client.clone())).await?;
         let settings = wallet_client.get_wallet_settings().await?;

@@ -17,22 +17,32 @@ pub struct ConnectCache {
 }
 
 impl ConnectCache {
-    /// Upsert tokens for the row matching `email`. When `user_id` is known
-    /// (the caller has just spoken to the backend), stamp it onto the row at
-    /// write time — both for fresh inserts and to promote legacy rows that
-    /// still lack a user_id. Refresh callers that don't know the user_id pass
-    /// `None`; in that case the existing user_id is preserved.
+    /// Upsert tokens for the row matching `user_id` or `email`. When `user_id`
+    /// is known, stamp it onto the row at write time, both for fresh inserts
+    /// and to promote legacy rows that still lack a user_id. Refresh callers
+    /// that don't know the user_id pass `None`; in that case the existing
+    /// user_id is preserved.
     fn upsert_credential(
         &mut self,
         user_id: Option<&str>,
         email: &str,
         tokens: AccessTokenResponse,
     ) {
-        if let Some(c) = self.accounts.iter_mut().find(|c| c.email == email) {
+        let existing_pos = user_id
+            .and_then(|uid| {
+                self.accounts
+                    .iter()
+                    .position(|c| c.user_id.as_deref() == Some(uid))
+            })
+            .or_else(|| self.accounts.iter().position(|c| c.email == email));
+
+        if let Some(i) = existing_pos {
+            let c = &mut self.accounts[i];
             c.tokens = tokens;
             if let Some(uid) = user_id {
                 c.user_id = Some(uid.to_string());
             }
+            c.email = email.to_string();
         } else {
             self.accounts.push(Account {
                 user_id: user_id.map(|s| s.to_string()),
@@ -81,7 +91,7 @@ impl Account {
         })
     }
 
-    /// Lookup by email — used by the account-picker UI and as a migration
+    /// Lookup by email, used by the account-picker UI and as a migration
     /// fallback when `user_id` is not yet known locally. Safe because emails
     /// are unique per Liana-Connect account (enforced by the backend).
     pub fn from_cache_by_email(
@@ -142,15 +152,26 @@ pub async fn update_connect_cache(
         ConnectCache::default()
     };
 
-    if let Some(c) = cache.accounts.iter().find(|cred| cred.email == *email) {
-        // Another process updated the tokens
+    let tokens = if let Some(c) = cache.accounts.iter().find(|cred| cred.email == *email) {
+        // Another process updated the tokens.
         if current_tokens.expires_at < c.tokens.expires_at {
-            tracing::debug!("Liana-Connect authentication tokens are up to date, nothing to do");
-            return Ok(c.tokens.clone());
+            let tokens = c.tokens.clone();
+            if !user_id.is_some_and(|uid| c.user_id.as_deref() != Some(uid)) {
+                tracing::debug!(
+                    "Liana-Connect authentication tokens are up to date, nothing to do"
+                );
+                return Ok(tokens);
+            }
+            tokens
+        } else if refresh {
+            client
+                .refresh_token(&current_tokens.refresh_token)
+                .await
+                .map_err(ConnectCacheError::Updating)?
+        } else {
+            current_tokens.clone()
         }
-    }
-
-    let tokens = if refresh {
+    } else if refresh {
         client
             .refresh_token(&current_tokens.refresh_token)
             .await
@@ -259,7 +280,7 @@ pub async fn filter_connect_cache(
 /// and falls back to `lookup_email` (covers legacy rows that lack `user_id`).
 /// Also consolidates duplicates: after an OTP re-auth with a changed email
 /// `update_connect_cache` may insert a fresh email-keyed row alongside the
-/// existing user_id row — we keep the freshest tokens on a single canonical
+/// existing user_id row. We keep the freshest tokens on a single canonical
 /// row and drop the rest. No-op if no row matches.
 pub async fn stamp_account_identity(
     network_dir: &NetworkDirectory,
@@ -356,7 +377,7 @@ fn stamp_in_memory(
     };
 
     // Among all rows that could plausibly be the same user (matching the new
-    // identity, the previous email, or — when given — the previous user_id),
+    // identity, the previous email, or the previous user_id when given),
     // keep the freshest tokens.
     let is_candidate = |a: &Account| {
         a.user_id.as_deref() == Some(new_user_id)
@@ -391,7 +412,7 @@ fn stamp_in_memory(
     };
 
     // Drop any other rows that now collide on user_id or email with the
-    // canonical row. Only dedupe by user_id or by the *new* email — never by
+    // canonical row. Only dedupe by user_id or by the *new* email, never by
     // the previous email alone, which could belong to an unrelated user.
     let mut i = 0;
     cache.accounts.retain(|a| {
@@ -490,6 +511,24 @@ mod tests {
         assert_eq!(cache.accounts.len(), 1);
         assert!(cache.accounts[0].user_id.is_none());
         assert_eq!(cache.accounts[0].email, "a@x");
+    }
+
+    #[test]
+    fn upsert_updates_by_user_id_when_email_changed() {
+        let mut cache = ConnectCache {
+            accounts: vec![Account {
+                user_id: Some("uid-1".to_string()),
+                email: "old@x".to_string(),
+                tokens: tok(100),
+            }],
+        };
+
+        cache.upsert_credential(Some("uid-1"), "new@x", tok(200));
+
+        assert_eq!(cache.accounts.len(), 1);
+        assert_eq!(cache.accounts[0].user_id.as_deref(), Some("uid-1"));
+        assert_eq!(cache.accounts[0].email, "new@x");
+        assert_eq!(cache.accounts[0].tokens.expires_at, 200);
     }
 
     // Bug 1: settings already has user_id but the cache row is still legacy
