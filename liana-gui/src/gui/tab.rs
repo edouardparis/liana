@@ -742,6 +742,7 @@ async fn connect_for_business(
                 .ok_or(login::Error::CredentialsMissing)?,
         }
     };
+    let refresh_user_id = cached.user_id;
     let mut tokens = cached.tokens;
 
     // Refresh if expired
@@ -751,7 +752,7 @@ async fn connect_for_business(
             &tokens,
             &auth_client,
             true,
-            user_id.as_deref(),
+            refresh_user_id.as_deref(),
         )
         .await?;
     }
@@ -771,7 +772,7 @@ async fn connect_for_business(
         .find(|w| w.id == wallet_id)
         .ok_or_else(|| login::Error::Unexpected(format!("Wallet {wallet_id} not found")))?;
 
-    // Wallet confirmed to belong to the connected user — safe to stamp the
+    // Wallet confirmed to belong to the connected user, safe to stamp the
     // local cache and settings entry. The by_email fallback in the cache
     // lookup above could otherwise have produced tokens for a different sub.
     let backfill_auth_cfg = crate::app::settings::AuthConfig {

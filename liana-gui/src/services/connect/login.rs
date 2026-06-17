@@ -586,6 +586,7 @@ pub async fn connect_with_credentials(
         }
     };
 
+    let refresh_user_id = cached.user_id;
     let mut tokens = cached.tokens;
 
     if tokens.expires_at < chrono::Utc::now().timestamp() {
@@ -594,7 +595,7 @@ pub async fn connect_with_credentials(
             &tokens,
             &auth,
             true,
-            auth_cfg.user_id.as_deref(),
+            refresh_user_id.as_deref(),
         )
         .await?;
     }
@@ -607,9 +608,8 @@ pub async fn connect_with_credentials(
         .into_iter()
         .find(|w| w.id == auth_cfg.wallet_id)
     {
-        // Only stamp settings/cache once we've confirmed the wallet belongs
-        // to the connected user. The cached-token by_email fallback above
-        // could otherwise have matched a row for a different `sub`.
+        // Only stamp settings/cache after the connected session returned the
+        // wallet recorded in the local settings.
         backfill_local_link(network_dir, &client, &auth_cfg).await?;
 
         let (wallet_client, wallet) = client.connect_wallet(wallet);
@@ -631,11 +631,8 @@ pub async fn connect_with_credentials(
 /// reported by the backend. Lazily migrates legacy entries that lack `user_id`
 /// and refreshes a stale email if it has been changed on Liana-Connect.
 ///
-/// MUST be called only after the wallet has been verified to belong to the
-/// connected user (i.e. `list_wallets` returned a wallet whose id matches
-/// `auth_cfg.wallet_id`); otherwise a stale-by-email cache row could point us
-/// at a different `sub` and we would rewrite local state to that wrong
-/// identity.
+/// Must be called only after the connected session returned the wallet recorded
+/// in the local settings.
 pub async fn backfill_local_link(
     network_dir: &NetworkDirectory,
     client: &BackendClient,

@@ -17,19 +17,35 @@ pub struct ConnectCache {
 }
 
 impl ConnectCache {
-    /// Upsert tokens for the row matching `email`. When `user_id` is known
-    /// (the caller has just spoken to the backend), stamp it onto the row at
-    /// write time — both for fresh inserts and to promote legacy rows that
-    /// still lack a user_id. Refresh callers that don't know the user_id pass
-    /// `None`; in that case the existing user_id is preserved.
+    fn matching_credential(&self, user_id: Option<&str>, email: &str) -> Option<usize> {
+        if let Some(uid) = user_id {
+            self.accounts
+                .iter()
+                .position(|c| c.user_id.as_deref() == Some(uid))
+                .or_else(|| {
+                    self.accounts
+                        .iter()
+                        .position(|c| c.user_id.is_none() && c.email == email)
+                })
+        } else {
+            self.accounts.iter().position(|c| c.email == email)
+        }
+    }
+
+    /// Upsert tokens for the row matching `user_id`, or a same-email legacy row
+    /// when the caller has just learned the user_id. Refresh callers that don't
+    /// know the user_id pass `None`; in that case the existing user_id is
+    /// preserved.
     fn upsert_credential(
         &mut self,
         user_id: Option<&str>,
         email: &str,
         tokens: AccessTokenResponse,
     ) {
-        if let Some(c) = self.accounts.iter_mut().find(|c| c.email == email) {
+        if let Some(idx) = self.matching_credential(user_id, email) {
+            let c = &mut self.accounts[idx];
             c.tokens = tokens;
+            c.email = email.to_string();
             if let Some(uid) = user_id {
                 c.user_id = Some(uid.to_string());
             }
@@ -81,7 +97,7 @@ impl Account {
         })
     }
 
-    /// Lookup by email — used by the account-picker UI and as a migration
+    /// Lookup by email, used by the account-picker UI and as a migration
     /// fallback when `user_id` is not yet known locally. Safe because emails
     /// are unique per Liana-Connect account (enforced by the backend).
     pub fn from_cache_by_email(
@@ -142,27 +158,30 @@ pub async fn update_connect_cache(
         ConnectCache::default()
     };
 
-    let existing = cache.accounts.iter().position(|cred| cred.email == *email);
+    let existing = cache.matching_credential(user_id, email);
 
     let (tokens_to_return, write_needed) = match existing {
         Some(idx) if current_tokens.expires_at < cache.accounts[idx].tokens.expires_at => {
             // Another process already wrote fresher tokens. Use those, but
-            // still stamp user_id in place if we just learned it and the row
-            // is still legacy — otherwise the freshness shortcut would leave
-            // an unstamped row and filter_connect_cache could drop it on a
-            // sibling wallet's deletion.
-            let needs_stamp = matches!(
+            // still stamp identity data in place when it changed.
+            let uid_changed = matches!(
                 (user_id, cache.accounts[idx].user_id.as_deref()),
                 (Some(_), None)
             );
-            if let (true, Some(uid)) = (needs_stamp, user_id) {
+            let email_changed = cache.accounts[idx].email != *email;
+            if let Some(uid) = user_id {
                 cache.accounts[idx].user_id = Some(uid.to_string());
-            } else {
+            }
+            cache.accounts[idx].email = email.to_string();
+            if !(uid_changed || email_changed) {
                 tracing::debug!(
                     "Liana-Connect authentication tokens are up to date, nothing to do"
                 );
             }
-            (cache.accounts[idx].tokens.clone(), needs_stamp)
+            (
+                cache.accounts[idx].tokens.clone(),
+                uid_changed || email_changed,
+            )
         }
         _ => {
             let tokens = if refresh {
@@ -199,6 +218,17 @@ pub async fn update_connect_cache(
     }
 
     Ok(tokens_to_return)
+}
+
+fn keep_account_for_settings(
+    account: &Account,
+    user_ids: &HashSet<String>,
+    legacy_emails: &HashSet<String>,
+) -> bool {
+    match &account.user_id {
+        Some(uid) => user_ids.contains(uid) || legacy_emails.contains(&account.email),
+        None => legacy_emails.contains(&account.email),
+    }
 }
 
 pub async fn filter_connect_cache(
@@ -247,10 +277,9 @@ pub async fn filter_connect_cache(
         ConnectCache::default()
     };
 
-    cache.accounts.retain(|a| match &a.user_id {
-        Some(uid) => user_ids.contains(uid),
-        None => legacy_emails.contains(&a.email),
-    });
+    cache
+        .accounts
+        .retain(|a| keep_account_for_settings(a, user_ids, legacy_emails));
 
     let content = serde_json::to_vec_pretty(&cache).map_err(|e| {
         ConnectCacheError::WritingFile(format!("Failed to serialize settings: {e}"))
@@ -278,7 +307,7 @@ pub async fn filter_connect_cache(
 /// and falls back to `lookup_email` (covers legacy rows that lack `user_id`).
 /// Also consolidates duplicates: after an OTP re-auth with a changed email
 /// `update_connect_cache` may insert a fresh email-keyed row alongside the
-/// existing user_id row — we keep the freshest tokens on a single canonical
+/// existing user_id row. We keep the freshest tokens on a single canonical
 /// row and drop the rest. No-op if no row matches.
 pub async fn stamp_account_identity(
     network_dir: &NetworkDirectory,
@@ -359,8 +388,8 @@ fn stamp_in_memory(
     new_user_id: &str,
     new_email: &str,
 ) -> bool {
-    // Locate the canonical row: prefer the stable user_id, fall back to the
-    // previous email so legacy (unstamped) rows can be promoted in place.
+    // Locate the canonical row: prefer stable user_id matches, then fall back
+    // to the previous email only for legacy rows that can be promoted in place.
     let canonical_pos = lookup_user_id
         .and_then(|uid| {
             cache
@@ -368,20 +397,32 @@ fn stamp_in_memory(
                 .iter()
                 .position(|a| a.user_id.as_deref() == Some(uid))
         })
-        .or_else(|| cache.accounts.iter().position(|a| a.email == lookup_email));
+        .or_else(|| {
+            cache
+                .accounts
+                .iter()
+                .position(|a| a.user_id.as_deref() == Some(new_user_id))
+        })
+        .or_else(|| {
+            cache
+                .accounts
+                .iter()
+                .position(|a| a.user_id.is_none() && a.email == lookup_email)
+        });
 
     let Some(canonical_pos) = canonical_pos else {
         return false;
     };
 
-    // Among all rows that could plausibly be the same user (matching the new
-    // identity, the previous email, or — when given — the previous user_id),
-    // keep the freshest tokens.
+    let canonical_is_legacy_email = cache.accounts[canonical_pos].user_id.is_none()
+        && cache.accounts[canonical_pos].email == lookup_email;
+
+    // Among rows that can be the same user, keep the freshest tokens. Only use
+    // the lookup email as proof when it picked the canonical legacy row.
     let is_candidate = |a: &Account| {
         a.user_id.as_deref() == Some(new_user_id)
-            || a.email == new_email
-            || a.email == lookup_email
-            || lookup_user_id.is_some_and(|uid| a.user_id.as_deref() == Some(uid))
+            || (a.user_id.is_none()
+                && (a.email == new_email || (canonical_is_legacy_email && a.email == lookup_email)))
     };
     let freshest_tokens = cache
         .accounts
@@ -392,13 +433,17 @@ fn stamp_in_memory(
         .unwrap_or_else(|| cache.accounts[canonical_pos].tokens.clone());
 
     let current = &cache.accounts[canonical_pos];
+    let same_user_row = |a: &Account| {
+        a.user_id.as_deref() == Some(new_user_id) || (a.user_id.is_none() && a.email == new_email)
+    };
     let needs_update = current.user_id.as_deref() != Some(new_user_id)
         || current.email != new_email
         || current.tokens.expires_at != freshest_tokens.expires_at
-        || cache.accounts.iter().enumerate().any(|(i, a)| {
-            i != canonical_pos
-                && (a.user_id.as_deref() == Some(new_user_id) || a.email == new_email)
-        });
+        || cache
+            .accounts
+            .iter()
+            .enumerate()
+            .any(|(i, a)| i != canonical_pos && same_user_row(a));
     if !needs_update {
         return false;
     }
@@ -409,13 +454,13 @@ fn stamp_in_memory(
         tokens: freshest_tokens,
     };
 
-    // Drop any other rows that now collide on user_id or email with the
-    // canonical row. Only dedupe by user_id or by the *new* email — never by
-    // the previous email alone, which could belong to an unrelated user.
+    // Drop any other row for the same user. A new-email collision only proves
+    // identity for legacy rows, not for rows that already have another user_id.
     let mut i = 0;
     cache.accounts.retain(|a| {
         let keep = i == canonical_pos
-            || (a.user_id.as_deref() != Some(new_user_id) && a.email != new_email);
+            || (a.user_id.as_deref() != Some(new_user_id)
+                && !(a.user_id.is_none() && a.email == new_email));
         i += 1;
         keep
     });
@@ -453,6 +498,40 @@ mod tests {
             expires_at,
             refresh_token: format!("refresh-{expires_at}"),
         }
+    }
+
+    #[test]
+    fn filter_keeps_stamped_row_for_remaining_legacy_email() {
+        let user_ids = HashSet::new();
+        let legacy_emails = vec!["a@x".to_string()].into_iter().collect();
+        let account = Account {
+            user_id: Some("uid-1".to_string()),
+            email: "a@x".to_string(),
+            tokens: tok(100),
+        };
+
+        assert!(keep_account_for_settings(
+            &account,
+            &user_ids,
+            &legacy_emails
+        ));
+    }
+
+    #[test]
+    fn filter_drops_stamped_row_without_matching_settings() {
+        let user_ids = HashSet::new();
+        let legacy_emails = vec!["other@x".to_string()].into_iter().collect();
+        let account = Account {
+            user_id: Some("uid-1".to_string()),
+            email: "a@x".to_string(),
+            tokens: tok(100),
+        };
+
+        assert!(!keep_account_for_settings(
+            &account,
+            &user_ids,
+            &legacy_emails
+        ));
     }
 
     #[test]
@@ -511,6 +590,55 @@ mod tests {
         assert_eq!(cache.accounts[0].email, "a@x");
     }
 
+    #[test]
+    fn upsert_inserts_when_same_email_has_another_user_id() {
+        let mut cache = ConnectCache {
+            accounts: vec![Account {
+                user_id: Some("uid-1".to_string()),
+                email: "old@x".to_string(),
+                tokens: tok(100),
+            }],
+        };
+
+        cache.upsert_credential(Some("uid-2"), "old@x", tok(200));
+
+        assert_eq!(cache.accounts.len(), 2);
+        assert_eq!(cache.accounts[0].user_id.as_deref(), Some("uid-1"));
+        assert_eq!(cache.accounts[0].email, "old@x");
+        assert_eq!(cache.accounts[0].tokens.expires_at, 100);
+        assert_eq!(cache.accounts[1].user_id.as_deref(), Some("uid-2"));
+        assert_eq!(cache.accounts[1].email, "old@x");
+        assert_eq!(cache.accounts[1].tokens.expires_at, 200);
+    }
+
+    #[test]
+    fn upsert_uses_user_id_before_email() {
+        let mut cache = ConnectCache {
+            accounts: vec![
+                Account {
+                    user_id: Some("uid-1".to_string()),
+                    email: "old@x".to_string(),
+                    tokens: tok(100),
+                },
+                Account {
+                    user_id: Some("uid-2".to_string()),
+                    email: "new@x".to_string(),
+                    tokens: tok(500),
+                },
+            ],
+        };
+
+        cache.upsert_credential(Some("uid-1"), "new@x", tok(200));
+
+        assert_eq!(cache.accounts.len(), 2);
+        assert_eq!(cache.accounts[0].user_id.as_deref(), Some("uid-1"));
+        assert_eq!(cache.accounts[0].email, "new@x");
+        assert_eq!(cache.accounts[0].tokens.expires_at, 200);
+        assert_eq!(cache.accounts[1].user_id.as_deref(), Some("uid-2"));
+        assert_eq!(cache.accounts[1].email, "new@x");
+        assert_eq!(cache.accounts[1].tokens.expires_at, 500);
+    }
+
     // Bug 1: settings already has user_id but the cache row is still legacy
     // (user_id=None). The user_id lookup misses; we must fall back to the
     // previous email so the legacy row gets stamped.
@@ -563,6 +691,128 @@ mod tests {
         assert_eq!(row.user_id.as_deref(), Some("uid-1"));
         assert_eq!(row.email, "new@x");
         assert_eq!(row.tokens.expires_at, 500);
+    }
+
+    #[test]
+    fn stamp_otp_uses_new_user_id_before_same_email_row() {
+        let mut cache = ConnectCache {
+            accounts: vec![
+                Account {
+                    user_id: Some("uid-2".to_string()),
+                    email: "old@x".to_string(),
+                    tokens: tok(500),
+                },
+                Account {
+                    user_id: Some("uid-1".to_string()),
+                    email: "old@x".to_string(),
+                    tokens: tok(200),
+                },
+            ],
+        };
+
+        let changed = stamp_in_memory(&mut cache, None, "old@x", "uid-1", "old@x");
+
+        assert!(!changed);
+        assert_eq!(cache.accounts.len(), 2);
+        assert_eq!(cache.accounts[0].user_id.as_deref(), Some("uid-2"));
+        assert_eq!(cache.accounts[0].tokens.expires_at, 500);
+        assert_eq!(cache.accounts[1].user_id.as_deref(), Some("uid-1"));
+        assert_eq!(cache.accounts[1].tokens.expires_at, 200);
+    }
+
+    #[test]
+    fn stamp_does_not_take_tokens_from_previous_email_when_new_user_id_matches() {
+        let mut cache = ConnectCache {
+            accounts: vec![
+                Account {
+                    user_id: Some("uid-2".to_string()),
+                    email: "old@x".to_string(),
+                    tokens: tok(500),
+                },
+                Account {
+                    user_id: None,
+                    email: "old@x".to_string(),
+                    tokens: tok(700),
+                },
+                Account {
+                    user_id: Some("uid-1".to_string()),
+                    email: "wallet@x".to_string(),
+                    tokens: tok(200),
+                },
+            ],
+        };
+
+        let changed = stamp_in_memory(&mut cache, None, "old@x", "uid-1", "new@x");
+
+        assert!(changed);
+        assert_eq!(cache.accounts.len(), 3);
+        assert_eq!(cache.accounts[0].user_id.as_deref(), Some("uid-2"));
+        assert_eq!(cache.accounts[0].email, "old@x");
+        assert_eq!(cache.accounts[0].tokens.expires_at, 500);
+        assert_eq!(cache.accounts[1].user_id, None);
+        assert_eq!(cache.accounts[1].email, "old@x");
+        assert_eq!(cache.accounts[1].tokens.expires_at, 700);
+        assert_eq!(cache.accounts[2].user_id.as_deref(), Some("uid-1"));
+        assert_eq!(cache.accounts[2].email, "new@x");
+        assert_eq!(cache.accounts[2].tokens.expires_at, 200);
+    }
+
+    #[test]
+    fn stamp_does_not_take_tokens_from_previous_email_when_user_id_matches() {
+        let mut cache = ConnectCache {
+            accounts: vec![
+                Account {
+                    user_id: Some("uid-1".to_string()),
+                    email: "wallet@x".to_string(),
+                    tokens: tok(100),
+                },
+                Account {
+                    user_id: Some("uid-2".to_string()),
+                    email: "old@x".to_string(),
+                    tokens: tok(500),
+                },
+            ],
+        };
+
+        let changed = stamp_in_memory(&mut cache, Some("uid-1"), "old@x", "uid-1", "new@x");
+
+        assert!(changed);
+        assert_eq!(cache.accounts.len(), 2);
+        assert_eq!(cache.accounts[0].user_id.as_deref(), Some("uid-1"));
+        assert_eq!(cache.accounts[0].email, "new@x");
+        assert_eq!(cache.accounts[0].tokens.expires_at, 100);
+        assert_eq!(cache.accounts[1].user_id.as_deref(), Some("uid-2"));
+        assert_eq!(cache.accounts[1].email, "old@x");
+        assert_eq!(cache.accounts[1].tokens.expires_at, 500);
+    }
+
+    #[test]
+    fn stamp_does_not_take_tokens_from_new_email_with_other_user_id() {
+        let mut cache = ConnectCache {
+            accounts: vec![
+                Account {
+                    user_id: Some("uid-1".to_string()),
+                    email: "wallet@x".to_string(),
+                    tokens: tok(100),
+                },
+                Account {
+                    user_id: Some("uid-2".to_string()),
+                    email: "new@x".to_string(),
+                    tokens: tok(500),
+                },
+            ],
+        };
+
+        let changed = stamp_in_memory(&mut cache, Some("uid-1"), "old@x", "uid-1", "new@x");
+
+        assert!(changed);
+        assert_eq!(cache.accounts.len(), 2);
+        assert_eq!(cache.accounts[0].user_id.as_deref(), Some("uid-1"));
+        assert_eq!(cache.accounts[0].email, "new@x");
+        assert_eq!(cache.accounts[0].tokens.expires_at, 100);
+        assert_eq!(cache.accounts[1].user_id.as_deref(), Some("uid-2"));
+        assert_eq!(cache.accounts[1].email, "new@x");
+        assert_eq!(cache.accounts[1].tokens.expires_at, 500);
     }
 
     #[test]
