@@ -586,6 +586,7 @@ pub async fn connect_with_credentials(
         }
     };
 
+    let refresh_user_id = cached.user_id;
     let mut tokens = cached.tokens;
 
     if tokens.expires_at < chrono::Utc::now().timestamp() {
@@ -594,7 +595,7 @@ pub async fn connect_with_credentials(
             &tokens,
             &auth,
             true,
-            auth_cfg.user_id.as_deref(),
+            refresh_user_id.as_deref(),
         )
         .await?;
     }
@@ -607,9 +608,8 @@ pub async fn connect_with_credentials(
         .into_iter()
         .find(|w| w.id == auth_cfg.wallet_id)
     {
-        // Only stamp settings/cache once we've confirmed the wallet belongs
-        // to the connected user. The cached-token by_email fallback above
-        // could otherwise have matched a row for a different `sub`.
+        // Only stamp settings/cache after the connected session returned the
+        // wallet recorded in the local settings.
         backfill_local_link(network_dir, &client, &auth_cfg).await?;
 
         let (wallet_client, wallet) = client.connect_wallet(wallet);
@@ -631,11 +631,8 @@ pub async fn connect_with_credentials(
 /// reported by the backend. Lazily migrates legacy entries that lack `user_id`
 /// and refreshes a stale email if it has been changed on Liana-Connect.
 ///
-/// MUST be called only after the wallet has been verified to belong to the
-/// connected user (i.e. `list_wallets` returned a wallet whose id matches
-/// `auth_cfg.wallet_id`); otherwise a stale-by-email cache row could point us
-/// at a different `sub` and we would rewrite local state to that wrong
-/// identity.
+/// Must be called only after the connected session returned the wallet recorded
+/// in the local settings.
 pub async fn backfill_local_link(
     network_dir: &NetworkDirectory,
     client: &BackendClient,
@@ -678,16 +675,81 @@ pub async fn backfill_settings_for_wallet(
     let user_id = user_id.to_string();
     let email = email.to_string();
     settings::update_settings_file(network_dir, move |mut s: settings::LianaSettings| {
-        for w in s.wallets.iter_mut() {
-            if let Some(a) = w.remote_backend_auth.as_mut() {
-                if a.wallet_id == wallet_id {
-                    a.user_id = Some(user_id.clone());
-                    a.email = email.clone();
-                }
-            }
-        }
+        backfill_settings_auth(&mut s, &wallet_id, &user_id, &email);
         s
     })
     .await
     .map_err(Error::Settings)
+}
+
+fn backfill_settings_auth(
+    settings: &mut settings::LianaSettings,
+    wallet_id: &str,
+    user_id: &str,
+    email: &str,
+) {
+    for w in settings.wallets.iter_mut() {
+        if let Some(a) = w.remote_backend_auth.as_mut() {
+            if a.wallet_id == wallet_id {
+                a.user_id = Some(user_id.to_string());
+                a.email = email.to_string();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wallet(
+        wallet_id: &str,
+        email: &str,
+        user_id: Option<&str>,
+    ) -> settings::LianaWalletSettings {
+        settings::LianaWalletSettings {
+            name: wallet_id.to_string(),
+            alias: None,
+            descriptor_checksum: wallet_id.to_string(),
+            pinned_at: None,
+            keys: vec![],
+            hardware_wallets: vec![],
+            remote_backend_auth: Some(settings::AuthConfig {
+                email: email.to_string(),
+                wallet_id: wallet_id.to_string(),
+                user_id: user_id.map(|uid| uid.to_string()),
+                refresh_token: None,
+            }),
+            start_internal_bitcoind: None,
+            fiat_price: None,
+        }
+    }
+
+    #[test]
+    fn backfill_settings_updates_only_verified_wallet() {
+        let mut settings = settings::LianaSettings {
+            wallets: vec![
+                wallet("wallet-a", "old@x", None),
+                wallet("wallet-b", "old@x", None),
+                wallet("wallet-c", "old@x", Some("uid-other")),
+                wallet("wallet-d", "other@x", None),
+            ],
+        };
+
+        backfill_settings_auth(&mut settings, "wallet-a", "uid-1", "new@x");
+
+        let auths: Vec<_> = settings
+            .wallets
+            .iter()
+            .map(|w| w.remote_backend_auth.as_ref().unwrap())
+            .collect();
+        assert_eq!(auths[0].user_id.as_deref(), Some("uid-1"));
+        assert_eq!(auths[0].email, "new@x");
+        assert!(auths[1].user_id.is_none());
+        assert_eq!(auths[1].email, "old@x");
+        assert_eq!(auths[2].user_id.as_deref(), Some("uid-other"));
+        assert_eq!(auths[2].email, "old@x");
+        assert!(auths[3].user_id.is_none());
+        assert_eq!(auths[3].email, "other@x");
+    }
 }

@@ -77,7 +77,7 @@ pub struct BackendClient {
     unauthenticated: Arc<AtomicBool>,
 
     user_id: String,
-    /// Email as reported by `/v1/me` — the authoritative server-side value,
+    /// Email as reported by `/v1/me`, the authoritative server-side value,
     /// which can differ from `auth_client.email` (the email the user typed
     /// or that we read out of local settings) after a server-side change.
     user_email: String,
